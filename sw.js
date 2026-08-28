@@ -2,6 +2,7 @@
 const CACHE = "pinning-bench-v1";
 const FILES = [
   "./",
+  "./index.html",
   "./master-pinning.html",
   "./key-reader.html",
   "./manifest.webmanifest",

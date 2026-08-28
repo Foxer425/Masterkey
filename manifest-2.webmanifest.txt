@@ -1,0 +1,25 @@
+{
+  "name": "Pinning Bench",
+  "short_name": "Pinning",
+  "description": "Kwikset master keying \u2014 read a key, get the pin stack.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#14171a",
+  "theme_color": "#14171a",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
