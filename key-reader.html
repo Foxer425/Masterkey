@@ -40,6 +40,15 @@
   #status.good{border-left-color:var(--ok)}
   .metrics{display:flex;gap:14px;flex-wrap:wrap;margin-top:9px;
            color:var(--dim);font-size:11px;letter-spacing:.06em}
+  .lights{display:flex;gap:6px;margin-top:10px}
+  .lights div{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:3px;
+              padding:7px 4px;text-align:center;font-size:9px;letter-spacing:.12em;
+              color:#5b656e;transition:color .25s, border-color .25s}
+  .lights div.on{color:var(--ok);border-color:rgba(89,179,122,.55)}
+  .lights div small{display:block;font-size:13px;letter-spacing:0;margin-bottom:3px}
+  .meter{height:5px;background:var(--panel2);border-radius:3px;margin-top:9px;overflow:hidden}
+  .meter i{display:block;height:100%;width:0;background:var(--brass);
+           transition:width .25s, background .25s}
   .metrics b{color:var(--txt);font-weight:400}
   .bit{display:flex;gap:7px;margin-top:4px}
   .bit div{flex:1;text-align:center;background:var(--panel2);border:1px solid var(--line);
@@ -60,6 +69,13 @@
     <canvas class="ov" id="ov"></canvas>
   </div>
   <div id="status">Starting camera&hellip;</div>
+  <div class="lights" id="lights">
+    <div data-k="frame"><small>&#9633;</small>FRAMING</div>
+    <div data-k="level"><small>&#9473;</small>LEVEL</div>
+    <div data-k="square"><small>&#9723;</small>SQUARE</div>
+    <div data-k="cuts"><small>&#9866;</small>CUTS</div>
+  </div>
+  <div class="meter"><i id="meter"></i></div>
   <div class="metrics" id="metrics"></div>
 </div>
 
@@ -205,24 +221,110 @@ function analyze(lum,W,H,spec){
   return res;
 }
 
-/* ============================ shot coaching =========================== */
-/* One instruction at a time, ordered by what blocks the reading most. */
-function coach(r,boxW){
-  if(!r.found) return {msg:"Point the camera at the key",cls:"warn"};
-  if(r.span<boxW*0.55) return {msg:"Move closer \u2014 fill the box with the blade",cls:"warn"};
-  if(r.reason==="few_ridges")
-    return {msg:"Can\u2019t see all five cuts. Shoulder at the left mark, tip at the right.",cls:"warn"};
-  if(Math.abs(r.tilt)>14)
-    return {msg:"Rotate the phone \u2014 sit the blade level in the box",cls:"warn"};
-  if(r.gapSpread>0.06){
-    var end=r.farEnd==="right"?"tip":"bow";
-    return {msg:"Angled shot \u2014 the "+end+" end is further away. Move over the middle of the key.",cls:"warn"};
+/* ============================ shot coaching ===========================
+   Two problems with naive coaching: the numbers jitter frame to frame, and
+   a message that rewrites itself ten times a second is unreadable. So the
+   metrics get smoothed, each check has separate enter/exit thresholds, and
+   no message is allowed to leave the screen before it can be read.        */
+
+var SM = null;                      // smoothed metrics
+function ema(o,n,a){ return o===null ? n : o + (n-o)*a; }
+
+function smooth(r, boxW){
+  if(!SM) SM = {fill:null, tilt:null, spread:null, ratio:null, ridges:null, cuts:null};
+  var a = 0.25;
+  if(!r.found){ SM.fill = ema(SM.fill, 0, a); SM.ridges = ema(SM.ridges, 0, a); return SM; }
+  SM.fill   = ema(SM.fill,   r.span/boxW, a);
+  SM.tilt   = ema(SM.tilt,   Math.abs(r.tilt), a);
+  SM.ridges = ema(SM.ridges, r.ridgeX ? r.ridgeX.length : (r.ridgeCount||0), a);
+  if(r.gaps){
+    SM.spread = ema(SM.spread, r.gapSpread, a);
+    SM.ratio  = ema(SM.ratio,  r.axisRatio, a);
+    var good = 0;
+    for(var i=0;i<r.depths.length;i++) if(r.depths[i]!==null) good++;
+    SM.cuts = ema(SM.cuts, good, a);
   }
-  if(r.axisRatio<0.88||r.axisRatio>1.14)
-    return {msg:"Blade is tilted away. Get the phone square over the key face.",cls:"warn"};
-  for(var i=0;i<r.depths.length;i++)
-    if(r.depths[i]===null) return {msg:"Cut "+(i+1)+" is out of range \u2014 check the light and glare",cls:"warn"};
-  return {msg:"Hold it there",cls:"good",locked:true};
+  return SM;
+}
+
+/* Each check: enter thresholds are strict, exit thresholds are looser, so a
+   message that is up stays up until the problem is clearly solved. */
+function checks(m, active){
+  function band(v, enter, exit, id){ return active===id ? v>exit : v>enter; }
+  return [
+    { id:"fill",   fail: active==="fill"   ? m.fill<0.72 : m.fill<0.62,
+      msg:"Move closer \u2014 fill the box with the blade" },
+    { id:"ridges", fail: active==="ridges" ? m.ridges<3.7 : m.ridges<3.2,
+      msg:"Line the blade up with the outline \u2014 bow off the left edge" },
+    { id:"level",  fail: band(m.tilt, 12, 8, "level"),
+      msg:"Rotate the phone \u2014 sit the blade level" },
+    { id:"spread", fail: band(m.spread, 0.06, 0.04, "spread"), dir:true,
+      msg:"Angled \u2014 slide over so both ends are the same distance away" },
+    { id:"square", fail: active==="square" ? (m.ratio<0.92||m.ratio>1.10) : (m.ratio<0.88||m.ratio>1.14),
+      msg:"Tilted away \u2014 get the phone flat above the key face" },
+    { id:"cuts",   fail: active==="cuts" ? m.cuts<4.7 : m.cuts<4.2,
+      msg:"Can\u2019t read every cut \u2014 kill the glare or use a darker background" }
+  ];
+}
+
+var coachState = {id:null, msg:"", since:0, pending:null, pendingFor:0};
+var HOLD_MS = 900, CONFIRM = 4;
+
+function coach(r, boxW){
+  var m = smooth(r, boxW), now = Date.now();
+  var want, wantMsg;
+
+  if(!r.found){ want="none"; wantMsg="Point the camera at the key"; }
+  else{
+    var list = checks(m, coachState.id), hit = null;
+    for(var i=0;i<list.length;i++) if(list[i].fail){ hit=list[i]; break; }
+    if(hit){
+      want = hit.id; wantMsg = hit.msg;
+      if(hit.dir && r.farEnd) wantMsg += " (" + (r.farEnd==="right" ? "tip" : "bow") + " end is further)";
+    } else { want="ok"; wantMsg="Hold it there"; }
+  }
+
+  // require the new state to persist, and never swap faster than HOLD_MS
+  if(want !== coachState.id){
+    if(coachState.pending === want) coachState.pendingFor++;
+    else { coachState.pending = want; coachState.pendingFor = 1; }
+    var settled = coachState.pendingFor >= (want==="ok" ? 2 : CONFIRM);
+    if(settled && now - coachState.since > HOLD_MS){
+      coachState.id = want; coachState.msg = wantMsg; coachState.since = now;
+      coachState.pending = null; coachState.pendingFor = 0;
+    }
+  } else {
+    coachState.msg = wantMsg; coachState.pending = null; coachState.pendingFor = 0;
+  }
+  if(coachState.id === null){ coachState.id = want; coachState.msg = wantMsg; coachState.since = now; }
+
+  return {
+    msg: coachState.msg,
+    cls: coachState.id === "ok" ? "good" : "warn",
+    locked: coachState.id === "ok" && want === "ok",
+    m: m
+  };
+}
+
+function paintLights(m, found){
+  var on = {
+    frame:  found && m.fill>=0.62 && m.ridges>=3.7,
+    level:  found && m.tilt!==null && m.tilt<=10,
+    square: found && m.spread!==null && m.spread<=0.05 && m.ratio>=0.90 && m.ratio<=1.12,
+    cuts:   found && m.cuts!==null && m.cuts>=4.7
+  };
+  var els = document.querySelectorAll("#lights div");
+  for(var i=0;i<els.length;i++) els[i].classList.toggle("on", !!on[els[i].dataset.k]);
+  // meter: how square the shot is, as a continuous 0-100 so movement is visible
+  var q = 0;
+  if(found && m.spread!==null){
+    var a = Math.max(0, 1 - m.spread/0.12);
+    var b = Math.max(0, 1 - Math.abs(m.ratio-1)/0.30);
+    q = Math.round(a*b*100);
+  }
+  var bar = document.getElementById("meter");
+  bar.style.width = q + "%";
+  bar.style.background = q>=80 ? "var(--ok)" : q>=45 ? "var(--brass)" : "var(--shear)";
 }
 
 /* ============================== plumbing ============================== */
@@ -233,8 +335,53 @@ var vid=document.getElementById("vid"), ov=document.getElementById("ov"),
 var work=document.createElement("canvas"), wctx=work.getContext("2d",{willReadFrequently:true});
 var PROC_W=440, burst=[], running=false, spec=KW1;
 
-function boxRect(w,h){ return {x:Math.round(w*0.06), y:Math.round(h*0.34),
-                               w:Math.round(w*0.88), h:Math.round(h*0.32)}; }
+function boxRect(w,h){
+  // shaped like a KW1 blade (about 4:1) so "fill the box" means something
+  var bw = Math.round(w*0.90), bh = Math.round(bw/4.0);
+  if(bh > h*0.55){ bh = Math.round(h*0.55); bw = Math.round(bh*4.0); }
+  return {x:Math.round((w-bw)/2), y:Math.round((h-bh)/2), w:bw, h:bh};
+}
+
+/* A ghost key drawn in the box, so there is no guessing about how much of
+   the key belongs inside it. Nest the real blade into the outline. */
+function ghost(c, box){
+  var x=box.x, y=box.y, w=box.w, h=box.h;
+  var shoulder = x + w*0.05, tip = x + w*0.985;
+  var bladeBot = y + h*0.80, uncut = y + h*0.20;
+  var first = shoulder + (tip-shoulder)*0.14, sp = (tip-shoulder)*0.155;
+
+  c.save();
+  c.strokeStyle = "rgba(200,145,43,.42)";
+  c.lineWidth = 2; c.setLineDash([6,5]);
+
+  c.beginPath();
+  c.moveTo(x - w*0.08, uncut - h*0.16);       // bow, running off the left edge
+  c.lineTo(shoulder, uncut - h*0.16);
+  c.lineTo(shoulder, uncut);
+  for(var i=0;i<5;i++){                        // a generic cut profile
+    var cx = first + i*sp, d = [0.34,0.20,0.42,0.24,0.36][i];
+    c.lineTo(cx - sp*0.30, uncut);
+    c.lineTo(cx,           uncut + h*d);
+    c.lineTo(cx + sp*0.30, uncut);
+  }
+  c.lineTo(tip - w*0.02, uncut);
+  c.lineTo(tip, uncut + h*0.14);
+  c.lineTo(tip, bladeBot - h*0.06);
+  c.lineTo(tip - w*0.015, bladeBot);
+  c.lineTo(shoulder, bladeBot);
+  c.lineTo(shoulder, bladeBot + h*0.16);
+  c.lineTo(x - w*0.08, bladeBot + h*0.16);
+  c.stroke();
+  c.setLineDash([]);
+
+  c.fillStyle = "rgba(200,145,43,.75)";
+  c.font = "600 11px monospace";
+  c.fillText("BOW OFF THE EDGE", x + 2, y - 9);
+  c.textAlign = "right";
+  c.fillText("TIP HERE", x + w, y - 9);
+  c.textAlign = "left";
+  c.restore();
+}
 
 function grabAndAnalyze(src,sw,sh){
   var box=boxRect(sw,sh);
@@ -252,22 +399,29 @@ function draw(r,sw,sh){
   ov.width=sw; ov.height=sh;
   var c=ov.getContext("2d"), box=boxRect(sw,sh);
   c.clearRect(0,0,sw,sh);
-  c.strokeStyle=r&&r.found?"rgba(200,145,43,.9)":"rgba(140,152,163,.6)";
-  c.lineWidth=2; c.setLineDash([7,5]);
+
+  // dim everything outside the box so the eye goes where the key should be
+  c.fillStyle="rgba(10,13,16,.45)";
+  c.fillRect(0,0,sw,box.y);
+  c.fillRect(0,box.y+box.h,sw,sh-box.y-box.h);
+  c.fillRect(0,box.y,box.x,box.h);
+  c.fillRect(box.x+box.w,box.y,sw-box.x-box.w,box.h);
+
+  c.strokeStyle = r && r.found ? "rgba(200,145,43,.85)" : "rgba(140,152,163,.5)";
+  c.lineWidth=2;
   c.strokeRect(box.x,box.y,box.w,box.h);
-  c.setLineDash([]);
-  c.fillStyle="rgba(140,152,163,.75)"; c.font="11px monospace";
-  c.fillText("SHOULDER",box.x+4,box.y-7);
-  c.textAlign="right"; c.fillText("TIP",box.x+box.w-4,box.y-7); c.textAlign="left";
-  if(!r||!r.found||!r.h) return;
+
+  ghost(c, box);
+
+  if(!r || !r.found || !r.h) return;
   var k=box.w/r._pw, oy=box.h/r._ph;
-  c.strokeStyle="#e0554f"; c.lineWidth=2; c.beginPath();
+  c.strokeStyle="#e0554f"; c.lineWidth=2.5; c.beginPath();
   for(var i=0;i<r.span;i++){
     var X=box.x+(r.x0+i)*k, Y=box.y+r.top[r.x0+i]*oy;
     i?c.lineTo(X,Y):c.moveTo(X,Y);
   }
   c.stroke();
-  c.strokeStyle="rgba(90,180,255,.9)"; c.beginPath();
+  c.strokeStyle="rgba(90,180,255,.9)"; c.lineWidth=2; c.beginPath();
   c.moveTo(box.x+r.x0*k, box.y+(r.line.slope*r.x0+r.line.intercept)*oy);
   c.lineTo(box.x+r.x1*k, box.y+(r.line.slope*r.x1+r.line.intercept)*oy);
   c.stroke();
@@ -275,7 +429,7 @@ function draw(r,sw,sh){
     c.fillStyle="#eab948";
     for(i=0;i<r.ridgeX.length;i++){
       var rx=box.x+(r.x0+r.ridgeX[i])*k;
-      c.fillRect(rx-1.5, box.y+box.h-16, 3, 12);
+      c.fillRect(rx-1.5, box.y+box.h-15, 3, 11);
     }
   }
 }
@@ -295,8 +449,10 @@ function tick(){
     var sw=vid.videoWidth, sh=vid.videoHeight;
     var r=grabAndAnalyze(vid,sw,sh);
     draw(r,sw,sh); showMetrics(r);
-    var c=coach(r,r._pw);
-    statusEl.textContent=c.msg; statusEl.className=c.cls;
+    var c=coach(r, r._pw);
+    paintLights(c.m, r.found);
+    if(statusEl.textContent!==c.msg) statusEl.textContent=c.msg;
+    statusEl.className=c.cls;
     if(c.locked){
       burst.push(r.depths);
       statusEl.textContent="Hold it there \u2014 "+burst.length+" of 8";
@@ -367,7 +523,9 @@ document.getElementById("still").onchange=function(e){
     var r=grabAndAnalyze(cv,img.width,img.height);
     vid.classList.add("hide");
     draw(r,img.width,img.height); showMetrics(r);
-    var c=coach(r,r._pw);
+    coachState={id:null,msg:"",since:0,pending:null,pendingFor:0}; SM=null;
+    for(var n=0;n<6;n++) var c=coach(r,r._pw);   // let the smoother settle on the one frame
+    paintLights(c.m, r.found);
     statusEl.textContent=c.msg; statusEl.className=c.cls;
     if(c.locked) render(r.depths,true);
   };
