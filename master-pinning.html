@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14171a">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <meta name="mobile-web-app-capable" content="yes">
+<title>Pinning Bench</title>
+<style>
+  :root{
+    --bg:#14171a;
+    --panel:#1c2126;
+    --panel2:#232a31;
+    --line:#2f373f;
+    --txt:#e7eaed;
+    --dim:#8c98a3;
+    --brass:#c8912b;
+    --brass-lt:#eab948;
+    --wafer:#7f97ab;
+    --wafer-lt:#a9c0d2;
+    --driver:#4a545e;
+    --shear:#e0554f;
+    --ok:#59b37a;
+    --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);
+    color:var(--txt);
+    font-family:var(--mono);
+    font-size:15px;
+    line-height:1.45;
+    padding:18px 14px 60px;
+    max-width:640px;
+    margin:0 auto;
+    -webkit-text-size-adjust:100%;
+  }
+  header{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:18px}
+  h1{
+    font-size:20px;margin:0;font-weight:700;
+    letter-spacing:.18em;text-transform:uppercase;
+  }
+  .sub{color:var(--dim);font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;margin-top:5px}
+
+  .lbl{
+    display:block;color:var(--dim);font-size:10.5px;
+    letter-spacing:.16em;text-transform:uppercase;margin-bottom:5px;
+  }
+  .card{
+    background:var(--panel);border:1px solid var(--line);
+    border-radius:4px;padding:14px;margin-bottom:14px;
+  }
+  .row{display:flex;gap:10px}
+  .row > *{flex:1;min-width:0}
+
+  input,select{
+    width:100%;background:var(--panel2);color:var(--txt);
+    border:1px solid var(--line);border-radius:3px;
+    font-family:var(--mono);font-size:17px;
+    padding:9px 10px;letter-spacing:.28em;
+  }
+  select{letter-spacing:.04em;font-size:13px}
+  input:focus,select:focus,button:focus-visible{
+    outline:2px solid var(--brass-lt);outline-offset:1px;border-color:var(--brass);
+  }
+  input::placeholder{color:#4c565f;letter-spacing:.28em}
+  #change{font-size:30px;padding:12px;text-align:center;letter-spacing:.42em;text-indent:.42em}
+
+  button{
+    background:var(--panel2);color:var(--txt);border:1px solid var(--line);
+    border-radius:3px;font-family:var(--mono);font-size:11px;
+    letter-spacing:.14em;text-transform:uppercase;padding:9px 12px;cursor:pointer;
+  }
+  button:active{background:#2d353d}
+  .toggle{display:flex;gap:0;margin-top:10px}
+  .toggle button{flex:1;border-radius:0}
+  .toggle button:first-child{border-radius:3px 0 0 3px}
+  .toggle button:last-child{border-radius:0 3px 3px 0;border-left:0}
+  .toggle button[aria-pressed="true"]{
+    background:var(--brass);border-color:var(--brass);color:#14171a;font-weight:700;
+  }
+
+  .verdict{font-size:13px;line-height:1.6}
+  .verdict b{color:var(--brass-lt)}
+  .score{color:var(--dim);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+
+  svg{width:100%;height:auto;display:block}
+
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:2px}
+  th{
+    color:var(--dim);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    font-weight:400;text-align:left;padding:0 0 7px;border-bottom:1px solid var(--line);
+  }
+  td{padding:8px 0;border-bottom:1px solid #232a31}
+  tr:last-child td{border-bottom:0}
+  td.n{color:var(--brass-lt);font-weight:700}
+  td.w{color:var(--wafer-lt);font-weight:700}
+  td.z{color:#495159}
+
+  ol{margin:0;padding-left:26px}
+  ol li{padding:5px 0;font-size:14px}
+  ol li::marker{color:var(--dim);font-size:11px}
+
+  .flag{
+    border-left:3px solid var(--shear);background:#251b1c;
+    padding:9px 11px;margin-top:9px;font-size:13px;line-height:1.5;
+  }
+  .flag.good{border-left-color:var(--ok);background:#182219}
+  .note{color:var(--dim);font-size:12px;line-height:1.5;margin-top:10px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pinning Bench</h1>
+  <div class="sub">Master key &rarr; pin stack</div>
+</header>
+
+<div class="card">
+  <label class="lbl" for="sys">Cylinder system</label>
+  <select id="sys">
+    <option value="gen">Other / Yale / Sargent &mdash; depths 0-9, MACS 7</option>
+    <option value="kw">Kwikset KW1 &mdash; depths 1-7, MACS 4</option>
+    <option value="sc">Schlage SC1 &mdash; depths 0-9, MACS 7</option>
+  </select>
+
+  <div class="row" style="margin-top:12px">
+    <div>
+      <label class="lbl" for="mA">Master A</label>
+      <input id="mA" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="00000">
+    </div>
+    <div>
+      <label class="lbl" for="mB">Master B</label>
+      <input id="mB" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="00000">
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <label class="lbl" for="change">Change key (this unit)</label>
+  <input id="change" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="00000">
+  <div class="toggle">
+    <button id="tA" aria-pressed="false">Use A</button>
+    <button id="tB" aria-pressed="false">Use B</button>
+  </div>
+</div>
+
+<div id="out"></div>
+
+<script>
+"use strict";
+
+var SYSTEMS = {
+  gen: {name:"Other / Yale / Sargent", min:0, max:9, macs:7},
+  kw:  {name:"Kwikset KW1",            min:1, max:7, macs:4},
+  sc:  {name:"Schlage SC1",            min:0, max:9, macs:7}
+};
+
+var el = function(id){ return document.getElementById(id); };
+var sysEl = el("sys"), mAEl = el("mA"), mBEl = el("mB"), chEl = el("change");
+var tA = el("tA"), tB = el("tB"), out = el("out");
+var pick = null; // null = auto, "A" or "B" = manual override
+
+/* ---- storage (optional; degrades quietly) ---- */
+function save(){
+  try{
+    localStorage.setItem("pinbench", JSON.stringify({
+      sys:sysEl.value, a:mAEl.value, b:mBEl.value
+    }));
+  }catch(e){}
+}
+function load(){
+  try{
+    var s = JSON.parse(localStorage.getItem("pinbench") || "null");
+    if(s){ sysEl.value = s.sys || "gen"; mAEl.value = s.a || ""; mBEl.value = s.b || ""; }
+  }catch(e){}
+}
+
+/* ---- core math ----
+   Bottom pin  = the shallower of the two cuts.
+   Master wafer = the difference. Bottom + wafer = the deeper cut.
+   Penalty: a 1-step split needs a wafer too thin to trust; a 2-step is
+   usable but tight; 0 or 3+ is clean.                                   */
+function penalty(a,b){
+  var c = Math.abs(a-b);
+  if(c === 1) return 5;
+  if(c === 2) return 1;
+  return 0;
+}
+
+function analyze(change, master){
+  var chambers = [], pen = 0;
+  for(var i=0;i<change.length;i++){
+    var c = +change[i], m = +master[i];
+    pen += penalty(c,m);
+    chambers.push({c:c, m:m, bottom:Math.min(c,m), wafer:Math.abs(c-m)});
+  }
+  return {chambers:chambers, pen:pen};
+}
+
+function macsBreak(key, limit){
+  var bad = [];
+  for(var i=1;i<key.length;i++){
+    if(Math.abs(+key[i] - +key[i-1]) > limit) bad.push(i);
+  }
+  return bad;
+}
+
+/* ---- diagram: the key sitting in the plug ----
+   The blade surface drops as the cut gets deeper, and the stack rides on
+   the surface, so the split always lands on the shear line. That is the
+   whole trick, and it is what the picture is for.                       */
+function diagram(res){
+  var ch = res.chambers, n = ch.length;
+  var U = 9;        // px per depth step
+  var C = 20;       // bottom pin length at a zero cut
+  var SP = 46;      // chamber spacing
+  var X0 = 86;      // first chamber centre
+  var PW = 22;      // pin width
+  var HC = 9;       // half-width of a cut flat
+  var Y0 = 150;     // blade surface at a zero cut
+  var SHEAR = Y0 - C;
+  var DL = 24;      // driver length
+  var TOP = 22;
+
+  var maxd = 0;
+  ch.forEach(function(p){ maxd = Math.max(maxd, p.c, p.m); });
+  var BB = Y0 + Math.max(maxd,6)*U + 16;   // bottom of blade
+  var tipX = X0 + (n-1)*SP + 36;
+  var W = tipX + 14;
+  var PH = BB + 42;                        // height of one panel
+  var FACE = 54;                           // face of the plug
+
+  function panel(field, label, tint){
+    var i, p, cx, px, ysurf, blen, wlen, tos;
+
+    // housing above the shear line, plug below it
+    var g  = '<rect x="'+FACE+'" y="'+TOP+'" width="'+(W-FACE-6)+'" height="'+(SHEAR-TOP)+'" fill="#191f24"/>';
+        g += '<rect x="'+FACE+'" y="'+SHEAR+'" width="'+(W-FACE-6)+'" height="'+(BB-SHEAR)+'" fill="#262d35"/>';
+
+    // the key itself
+    var path = 'M44,'+Y0+' L'+(X0-HC-16)+','+Y0;
+    for(i=0;i<n;i++){
+      ysurf = Y0 + ch[i][field]*U;
+      cx = X0 + i*SP;
+      path += ' L'+(cx-HC)+','+ysurf+' L'+(cx+HC)+','+ysurf;
+    }
+    var lastY = Y0 + ch[n-1][field]*U;
+    var tipTop = Math.max(Y0+2, lastY - 2.5*U);
+    path += ' L'+(tipX-18)+','+tipTop+' L'+tipX+','+(tipTop+12)+
+            ' L'+tipX+','+(BB-9)+' L'+(tipX-9)+','+BB+' L44,'+BB+' Z';
+    g += '<path d="'+path+'" fill="'+tint+'"/>';
+    g += '<rect x="6" y="'+(Y0-26)+'" width="42" height="'+(BB-Y0+48)+'" rx="10" fill="'+tint+'"/>';
+    g += '<circle cx="25" cy="'+(Y0-8)+'" r="7" fill="var(--panel)"/>';
+
+    // chamber bores, then the stacks
+    for(i=0;i<n;i++){
+      p = ch[i];
+      ysurf = Y0 + p[field]*U;
+      blen  = p.bottom*U + C;
+      wlen  = p.wafer*U;
+      tos   = ysurf - blen - wlen;         // top of the stack
+      cx = X0 + i*SP; px = cx - PW/2;
+
+      g += '<rect x="'+px+'" y="'+TOP+'" width="'+PW+'" height="'+(ysurf-TOP)+'" fill="#101418"/>';
+      var dtop = Math.max(TOP, tos-DL);
+      g += '<rect x="'+px+'" y="'+dtop+'" width="'+PW+'" height="'+(tos-dtop)+'" rx="2" fill="var(--driver)"/>';
+      if(wlen>0) g += '<rect x="'+px+'" y="'+tos+'" width="'+PW+'" height="'+wlen+'" rx="1.5" fill="var(--wafer)"/>';
+      g += '<rect x="'+px+'" y="'+(ysurf-blen)+'" width="'+PW+'" height="'+blen+'" rx="2" fill="var(--brass)"/>';
+      g += '<text x="'+cx+'" y="'+(ysurf-8)+'" text-anchor="middle" fill="#14171a" font-size="11" font-weight="700" font-family="var(--mono)">'+p.bottom+'</text>';
+      if(wlen>=12) g += '<text x="'+cx+'" y="'+(tos+wlen/2+4)+'" text-anchor="middle" fill="#14171a" font-size="10" font-weight="700" font-family="var(--mono)">'+p.wafer+'</text>';
+      g += '<text x="'+cx+'" y="'+(BB+19)+'" text-anchor="middle" fill="'+tint+'" font-size="12" font-family="var(--mono)">'+p[field]+'</text>';
+    }
+
+    // plug face and shear line, on top of everything
+    g += '<line x1="'+FACE+'" y1="'+TOP+'" x2="'+FACE+'" y2="'+BB+'" stroke="#0d1013" stroke-width="2"/>';
+    g += '<line x1="'+FACE+'" y1="'+SHEAR+'" x2="'+(W-6)+'" y2="'+SHEAR+'" stroke="var(--shear)" stroke-width="1.2" stroke-dasharray="4 3"/>';
+    g += '<text x="'+(W-6)+'" y="'+(SHEAR-5)+'" text-anchor="end" fill="var(--shear)" font-size="8.5" letter-spacing="1.4" font-family="var(--mono)">SHEAR LINE</text>';
+    g += '<text x="2" y="'+(TOP-8)+'" fill="'+tint+'" font-size="9" letter-spacing="1.8" font-family="var(--mono)">'+label+'</text>';
+    return g;
+  }
+
+  var s = '<svg viewBox="0 0 '+W+' '+(PH*2)+'" role="img" aria-label="The change key and the master key in the plug, with pin stacks">';
+  s += panel("c","CHANGE KEY","#b9c4cd");
+  s += '<g transform="translate(0,'+PH+')">'+panel("m","MASTER KEY","#d8b25f")+'</g>';
+  s += '</svg>';
+  return s;
+}
+
+function esc(t){ return String(t).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
+
+/* ---- render ---- */
+function render(){
+  save();
+  var sys = SYSTEMS[sysEl.value];
+  var a = mAEl.value.replace(/\D/g,""), b = mBEl.value.replace(/\D/g,"");
+  var c = chEl.value.replace(/\D/g,"");
+  out.innerHTML = "";
+
+  if(!c){ 
+    out.innerHTML = '<div class="note">Enter a change key to build the pinning chart. Set at least one master key above.</div>';
+    return;
+  }
+  var cands = [];
+  if(a) cands.push({tag:"A", key:a});
+  if(b) cands.push({tag:"B", key:b});
+  if(!cands.length){
+    out.innerHTML = '<div class="flag">No master key set. Fill in Master A (and B if you run two systems).</div>';
+    return;
+  }
+  var wrong = cands.filter(function(k){ return k.key.length !== c.length; });
+  if(wrong.length){
+    out.innerHTML = '<div class="flag">Master '+wrong.map(function(k){return k.tag;}).join(" and ")+
+      ' is '+wrong[0].key.length+' cuts, change key is '+c.length+'. They have to match.</div>';
+    return;
+  }
+  var range = [].concat(a.split(""), b.split(""), c.split("")).map(Number)
+    .filter(function(d){ return d < sys.min || d > sys.max; });
+  var rangeWarn = range.length ? sys.name+" only runs depths "+sys.min+"&ndash;"+sys.max+". Check your digits." : "";
+
+  // score each candidate
+  cands.forEach(function(k){ k.res = analyze(c, k.key); });
+  var best = cands.slice().sort(function(x,y){ return x.res.pen - y.res.pen; })[0];
+  var chosen = pick ? (cands.filter(function(k){return k.tag===pick;})[0] || best) : best;
+
+  tA.setAttribute("aria-pressed", chosen.tag === "A");
+  tB.setAttribute("aria-pressed", chosen.tag === "B");
+
+  var html = "";
+
+  // verdict
+  html += '<div class="card"><div class="verdict">Pinning to <b>master '+chosen.tag+' &mdash; '+esc(chosen.key)+'</b>';
+  if(cands.length === 2){
+    var other = cands.filter(function(k){ return k !== chosen; })[0];
+    html += pick
+      ? ' (your pick).'
+      : (chosen.res.pen === other.res.pen
+          ? ' &mdash; both masters score the same here.'
+          : ' &mdash; cleaner splits than master '+other.tag+'.');
+    html += '<div class="score" style="margin-top:6px">Split penalty &nbsp; A '+cands[0].res.pen+' &nbsp;&middot;&nbsp; B '+cands[1].res.pen+' &nbsp; (lower is better)</div>';
+  }
+  html += '</div></div>';
+
+  // diagram
+  html += '<div class="card">'+diagram(chosen.res)+'</div>';
+
+  // chart
+  html += '<div class="card"><table><thead><tr>'+
+          '<th>Chmbr</th><th>Bottom pin</th><th>Master wafer</th><th>Stack</th>'+
+          '</tr></thead><tbody>';
+  chosen.res.chambers.forEach(function(p,i){
+    html += '<tr><td>'+(i+1)+'</td>'+
+            '<td class="n">#'+p.bottom+'</td>'+
+            (p.wafer ? '<td class="w">#'+p.wafer+'</td>' : '<td class="z">none</td>')+
+            '<td class="z">'+p.bottom+(p.wafer? " + "+p.wafer : "")+' = '+(p.bottom+p.wafer)+'</td></tr>';
+  });
+  html += '</tbody></table></div>';
+
+  // steps — assumes the cylinder is currently pinned standard to the change key
+  var steps = [];
+  chosen.res.chambers.forEach(function(p,i){
+    var n = i+1;
+    if(p.bottom !== p.c) steps.push("Chamber "+n+" &mdash; pull the #"+p.c+" bottom pin, drop in a #"+p.bottom+".");
+    if(p.wafer)          steps.push("Chamber "+n+" &mdash; add a #"+p.wafer+" master wafer on top of the bottom pin.");
+  });
+  if(!steps.length){
+    html += '<div class="card"><div class="flag good">Change key and master are identical at every chamber. Nothing to split &mdash; this cylinder is already the master.</div></div>';
+  }else{
+    html += '<div class="card"><span class="lbl">At the bench</span><ol>';
+    steps.forEach(function(s){ html += "<li>"+s+"</li>"; });
+    html += '</ol><div class="note">Assumes the cylinder is pinned standard to the change key right now. Drivers and springs stay put.</div>'+
+            '<button id="copy" style="margin-top:12px;width:100%">Copy steps</button></div>';
+  }
+
+  // flags
+  var flags = "";
+  if(rangeWarn) flags += '<div class="flag">'+rangeWarn+'</div>';
+  var thin = chosen.res.chambers.map(function(p,i){ return p.wafer===1 ? i+1 : 0; }).filter(Boolean);
+  if(thin.length) flags += '<div class="flag">One-step wafer at chamber '+thin.join(", ")+
+    '. A #1 wafer is thin enough to cock in the chamber and stick. Change that cut on the change key by 2 or more if you can.</div>';
+  var mb = macsBreak(c, sys.macs);
+  if(mb.length) flags += '<div class="flag">Change key breaks MACS ('+sys.macs+') between chamber '+
+    mb.map(function(i){ return i+" and "+(i+1); }).join(", ")+'. The blank may not cut cleanly.</div>';
+  if(flags) html += '<div class="card" style="border-color:#3a2b2c">'+flags+'</div>';
+
+  out.innerHTML = html;
+
+  var cp = el("copy");
+  if(cp) cp.onclick = function(){
+    var txt = "Change "+c+"  /  Master "+chosen.key+"\n" +
+      chosen.res.chambers.map(function(p,i){
+        return "  ch"+(i+1)+"  bottom #"+p.bottom+(p.wafer? "  wafer #"+p.wafer : "");
+      }).join("\n");
+    try{
+      navigator.clipboard.writeText(txt);
+      cp.textContent = "Copied";
+      setTimeout(function(){ cp.textContent = "Copy steps"; }, 1400);
+    }catch(e){ cp.textContent = "Copy unavailable"; }
+  };
+}
+
+tA.onclick = function(){ pick = (pick === "A") ? null : "A"; render(); };
+tB.onclick = function(){ pick = (pick === "B") ? null : "B"; render(); };
+[sysEl, mAEl, mBEl, chEl].forEach(function(n){
+  n.addEventListener("input", render);
+  n.addEventListener("change", render);
+});
+
+load();
+render();
+</script>
+
+<script>
+if("serviceWorker" in navigator){
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("./sw.js").catch(function(){ /* http, or opened from disk */ });
+  });
+}
+</script>
+</body>
+</html>

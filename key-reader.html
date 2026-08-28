@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14171a">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <meta name="mobile-web-app-capable" content="yes">
+<title>Key Reader</title>
+<style>
+  :root{
+    --bg:#14171a; --panel:#1c2126; --panel2:#232a31; --line:#2f373f;
+    --txt:#e7eaed; --dim:#8c98a3; --brass:#c8912b; --brass-lt:#eab948;
+    --wafer:#7f97ab; --shear:#e0554f; --ok:#59b37a;
+    --mono: ui-monospace,"SF Mono","Roboto Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:var(--mono);font-size:15px;
+       line-height:1.45;padding:16px 12px 48px;max-width:640px;margin:0 auto}
+  h1{font-size:19px;margin:0;font-weight:700;letter-spacing:.18em;text-transform:uppercase}
+  .sub{color:var(--dim);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin:5px 0 16px}
+  .lbl{display:block;color:var(--dim);font-size:10.5px;letter-spacing:.16em;
+       text-transform:uppercase;margin-bottom:6px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:4px;
+        padding:13px;margin-bottom:12px}
+  button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:3px;
+         font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
+         padding:11px 14px;cursor:pointer;width:100%}
+  button.go{background:var(--brass);border-color:var(--brass);color:#14171a;font-weight:700}
+  button:active{opacity:.8}
+  .stage{position:relative;background:#0c0f12;border:1px solid var(--line);border-radius:4px;
+         overflow:hidden;line-height:0}
+  video,canvas.ov{display:block;width:100%}
+  canvas.ov{position:absolute;inset:0;height:100%}
+  #status{margin-top:10px;padding:11px 12px;border-left:3px solid var(--dim);
+          background:#1a1f24;font-size:13.5px;line-height:1.45;min-height:44px}
+  #status.warn{border-left-color:var(--shear)}
+  #status.good{border-left-color:var(--ok)}
+  .metrics{display:flex;gap:14px;flex-wrap:wrap;margin-top:9px;
+           color:var(--dim);font-size:11px;letter-spacing:.06em}
+  .metrics b{color:var(--txt);font-weight:400}
+  .bit{display:flex;gap:7px;margin-top:4px}
+  .bit div{flex:1;text-align:center;background:var(--panel2);border:1px solid var(--line);
+           border-radius:3px;padding:9px 0;font-size:24px;color:var(--brass-lt);cursor:pointer}
+  .bit div small{display:block;font-size:9.5px;color:var(--dim);letter-spacing:.1em}
+  .note{color:var(--dim);font-size:12px;line-height:1.5;margin-top:10px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+
+<h1>Key Reader</h1>
+<div class="sub">Kwikset KW1 &middot; 5 cuts</div>
+
+<div class="card">
+  <div class="stage">
+    <video id="vid" playsinline muted autoplay></video>
+    <canvas class="ov" id="ov"></canvas>
+  </div>
+  <div id="status">Starting camera&hellip;</div>
+  <div class="metrics" id="metrics"></div>
+</div>
+
+<div class="card" id="startCard">
+  <button class="go" id="start">Start camera</button>
+  <div class="note">The camera needs https or localhost. If you opened this file
+    straight off the disk it will fall back to a single photo.</div>
+  <div style="margin-top:10px"><input type="file" accept="image/*" id="still" style="width:100%"></div>
+</div>
+
+<div class="card hide" id="result">
+  <span class="lbl">Reading &mdash; tap a digit to correct it</span>
+  <div class="bit" id="bit"></div>
+  <div class="note" id="conf"></div>
+  <button class="go" id="use" style="margin-top:12px">Use this bitting</button>
+</div>
+
+<script>
+/* ============================== analyzer ============================== */
+var KW1={cuts:5,spacing:0.150,firstCut:0.247,root1:0.329,increment:0.023,
+         minDepth:1,maxDepth:7,macs:4,bladeHeight:0.335};
+
+function blur1d(src,W,H,r){
+  var tmp=new Float32Array(W*H),out=new Float32Array(W*H),x,y,i,s,n;
+  for(y=0;y<H;y++)for(x=0;x<W;x++){s=0;n=0;
+    for(i=-r;i<=r;i++){var xx=x+i;if(xx>=0&&xx<W){s+=src[y*W+xx];n++;}}tmp[y*W+x]=s/n;}
+  for(y=0;y<H;y++)for(x=0;x<W;x++){s=0;n=0;
+    for(i=-r;i<=r;i++){var yy=y+i;if(yy>=0&&yy<H){s+=tmp[yy*W+x];n++;}}out[y*W+x]=s/n;}
+  return out;
+}
+function medianFilter(a,k){
+  var out=new Float32Array(a.length),half=k>>1,buf=[];
+  for(var i=0;i<a.length;i++){buf.length=0;
+    for(var j=-half;j<=half;j++){var t=i+j;if(t>=0&&t<a.length)buf.push(a[t]);}
+    buf.sort(function(p,q){return p-q;});out[i]=buf[buf.length>>1];}
+  return out;
+}
+function median(a){if(!a.length)return 0;var s=a.slice().sort(function(p,q){return p-q;});return s[s.length>>1];}
+function robustLine(xs,ys){
+  function fit(ix){var n=ix.length,sx=0,sy=0,sxx=0,sxy=0;
+    for(var i=0;i<n;i++){var x=xs[ix[i]],y=ys[ix[i]];sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;}
+    var d=n*sxx-sx*sx;if(Math.abs(d)<1e-9)return[0,sy/Math.max(n,1)];
+    return[(n*sxy-sx*sy)/d,(sy*sxx-sx*sxy)/d];}
+  var idx=[],i;for(i=0;i<xs.length;i++)idx.push(i);
+  var m=fit(idx);
+  for(var p=0;p<2;p++){
+    var res=[];for(i=0;i<idx.length;i++)res.push(Math.abs(ys[idx[i]]-(m[0]*xs[idx[i]]+m[1])));
+    var srt=res.slice().sort(function(a,b){return a-b;});
+    var cut=Math.max(1.2,srt[Math.floor(srt.length*0.7)]*1.8),keep=[];
+    for(i=0;i<idx.length;i++)if(res[i]<=cut)keep.push(idx[i]);
+    if(keep.length<xs.length*0.35)break;
+    idx=keep;m=fit(idx);
+  }
+  return{slope:m[0],intercept:m[1]};
+}
+function findPeaks(h,prom,dist){
+  var pk=[],i;
+  for(i=1;i<h.length-1;i++){
+    if(h[i]>=h[i-1]&&h[i]>h[i+1]){
+      var l=h[i],r=h[i],j,k;
+      for(j=i;j>0&&h[j]<=h[i];j--)l=Math.min(l,h[j]);
+      for(k=i;k<h.length-1&&h[k]<=h[i];k++)r=Math.min(r,h[k]);
+      if(h[i]-Math.max(l,r)>=prom)pk.push(i);
+    }
+  }
+  var out=[];pk.sort(function(a,b){return h[b]-h[a];});
+  for(i=0;i<pk.length;i++){var ok=true;
+    for(var q=0;q<out.length;q++)if(Math.abs(pk[i]-out[q])<dist)ok=false;
+    if(ok)out.push(pk[i]);}
+  out.sort(function(a,b){return a-b;});return out;
+}
+
+function analyze(lum,W,H,spec){
+  spec=spec||KW1;
+  var g=blur1d(lum,W,H,1);
+  var top=new Float32Array(W),bot=new Float32Array(W),cols=[],x,y;
+  for(x=1;x<W-1;x++){
+    var first=-1,last=-1;
+    for(y=1;y<H-1;y++){
+      var v=(g[(y+1)*W+x-1]+2*g[(y+1)*W+x]+g[(y+1)*W+x+1])
+           -(g[(y-1)*W+x-1]+2*g[(y-1)*W+x]+g[(y-1)*W+x+1]);
+      if(Math.abs(v)>104){if(first<0)first=y;last=y;}
+    }
+    if(first>=0&&last-first>H*0.02){top[x]=first;bot[x]=last;cols.push(x);}
+  }
+  if(cols.length<W*0.4)return{found:false,reason:"no_key"};
+
+  var x0=cols[0],x1=cols[cols.length-1],bx=[],by=[],i;
+  for(i=0;i<cols.length;i++){bx.push(cols[i]);by.push(bot[cols[i]]);}
+  var line=robustLine(bx,by);
+
+  var span=x1-x0+1,h=new Float32Array(span);
+  for(i=0;i<span;i++)h[i]=(line.slope*(x0+i)+line.intercept)-top[x0+i];
+  h=medianFilter(h,7);
+  var hi=0;for(i=0;i<span;i++)hi=Math.max(hi,h[i]);
+
+  var res={found:true,x0:x0,x1:x1,span:span,h:h,bladeMaxPx:hi,
+           tilt:Math.atan(line.slope)*180/Math.PI,line:line,top:top};
+
+  var ridges=findPeaks(h,hi*0.05,Math.max(6,span*0.05));
+  if(ridges.length<spec.cuts-1){res.reason="few_ridges";res.ridgeCount=ridges.length;return res;}
+
+  var need=spec.cuts-1,use=ridges;
+  if(ridges.length>need){
+    var bestScore=1e18,bestSet=ridges.slice(0,need),combo=[];
+    (function pick(start,depth){
+      if(depth===need){
+        var gg=[],j;for(j=1;j<combo.length;j++)gg.push(combo[j]-combo[j-1]);
+        var mn=median(gg);if(mn<=0)return;
+        var err=0;for(j=0;j<gg.length;j++)err+=Math.pow((gg[j]-mn)/mn,2);
+        err=err/gg.length-Math.log(mn)*0.02;
+        if(err<bestScore){bestScore=err;bestSet=combo.slice();}
+        return;
+      }
+      for(var k=start;k<ridges.length-(need-depth-1);k++){combo[depth]=ridges[k];pick(k+1,depth+1);}
+    })(0,0);
+    use=bestSet;
+  }
+
+  var gaps=[];for(i=1;i<use.length;i++)gaps.push(use[i]-use[i-1]);
+  var s=median(gaps),spread=0;
+  for(i=0;i<gaps.length;i++)spread=Math.max(spread,Math.abs(gaps[i]-s)/s);
+
+  res.ridgeX=use;res.gaps=gaps;res.spacingPx=s;res.gapSpread=spread;
+  res.pxPerInch=s/spec.spacing;
+  res.bladeInches=hi/res.pxPerInch;
+  res.axisRatio=res.bladeInches/spec.bladeHeight;   // 1.0 = square on
+  res.farEnd=gaps.length>1?(gaps[gaps.length-1]<gaps[0]?"right":"left"):null;
+
+  var depths=[],raw=[];
+  for(i=0;i<spec.cuts;i++){
+    var cx=use[0]-s/2+i*s,lo=1e9,d;
+    for(d=-Math.round(s*0.22);d<=Math.round(s*0.22);d++){
+      var xx=Math.round(cx-x0+d);if(xx>=0&&xx<span)lo=Math.min(lo,h[xx]);
+    }
+    if(lo>1e8){raw.push(null);depths.push(null);continue;}
+    var inches=lo/res.pxPerInch,dep=1+(spec.root1-inches)/spec.increment;
+    raw.push(dep);
+    depths.push(dep<spec.minDepth-0.6||dep>spec.maxDepth+0.6?null:
+                Math.max(spec.minDepth,Math.min(spec.maxDepth,Math.round(dep))));
+  }
+  res.rawDepths=raw;res.depths=depths;
+  return res;
+}
+
+/* ============================ shot coaching =========================== */
+/* One instruction at a time, ordered by what blocks the reading most. */
+function coach(r,boxW){
+  if(!r.found) return {msg:"Point the camera at the key",cls:"warn"};
+  if(r.span<boxW*0.55) return {msg:"Move closer \u2014 fill the box with the blade",cls:"warn"};
+  if(r.reason==="few_ridges")
+    return {msg:"Can\u2019t see all five cuts. Shoulder at the left mark, tip at the right.",cls:"warn"};
+  if(Math.abs(r.tilt)>14)
+    return {msg:"Rotate the phone \u2014 sit the blade level in the box",cls:"warn"};
+  if(r.gapSpread>0.06){
+    var end=r.farEnd==="right"?"tip":"bow";
+    return {msg:"Angled shot \u2014 the "+end+" end is further away. Move over the middle of the key.",cls:"warn"};
+  }
+  if(r.axisRatio<0.88||r.axisRatio>1.14)
+    return {msg:"Blade is tilted away. Get the phone square over the key face.",cls:"warn"};
+  for(var i=0;i<r.depths.length;i++)
+    if(r.depths[i]===null) return {msg:"Cut "+(i+1)+" is out of range \u2014 check the light and glare",cls:"warn"};
+  return {msg:"Hold it there",cls:"good",locked:true};
+}
+
+/* ============================== plumbing ============================== */
+var vid=document.getElementById("vid"), ov=document.getElementById("ov"),
+    statusEl=document.getElementById("status"), metricsEl=document.getElementById("metrics"),
+    resultCard=document.getElementById("result"), bitEl=document.getElementById("bit"),
+    confEl=document.getElementById("conf"), startCard=document.getElementById("startCard");
+var work=document.createElement("canvas"), wctx=work.getContext("2d",{willReadFrequently:true});
+var PROC_W=440, burst=[], running=false, spec=KW1;
+
+function boxRect(w,h){ return {x:Math.round(w*0.06), y:Math.round(h*0.34),
+                               w:Math.round(w*0.88), h:Math.round(h*0.32)}; }
+
+function grabAndAnalyze(src,sw,sh){
+  var box=boxRect(sw,sh);
+  var scale=PROC_W/box.w, pw=PROC_W, ph=Math.max(40,Math.round(box.h*scale));
+  work.width=pw; work.height=ph;
+  wctx.drawImage(src, box.x,box.y,box.w,box.h, 0,0,pw,ph);
+  var d=wctx.getImageData(0,0,pw,ph).data, lum=new Float32Array(pw*ph);
+  for(var i=0,j=0;i<d.length;i+=4,j++) lum[j]=(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114);
+  var r=analyze(lum,pw,ph,spec);
+  r._box=box; r._pw=pw; r._ph=ph;
+  return r;
+}
+
+function draw(r,sw,sh){
+  ov.width=sw; ov.height=sh;
+  var c=ov.getContext("2d"), box=boxRect(sw,sh);
+  c.clearRect(0,0,sw,sh);
+  c.strokeStyle=r&&r.found?"rgba(200,145,43,.9)":"rgba(140,152,163,.6)";
+  c.lineWidth=2; c.setLineDash([7,5]);
+  c.strokeRect(box.x,box.y,box.w,box.h);
+  c.setLineDash([]);
+  c.fillStyle="rgba(140,152,163,.75)"; c.font="11px monospace";
+  c.fillText("SHOULDER",box.x+4,box.y-7);
+  c.textAlign="right"; c.fillText("TIP",box.x+box.w-4,box.y-7); c.textAlign="left";
+  if(!r||!r.found||!r.h) return;
+  var k=box.w/r._pw, oy=box.h/r._ph;
+  c.strokeStyle="#e0554f"; c.lineWidth=2; c.beginPath();
+  for(var i=0;i<r.span;i++){
+    var X=box.x+(r.x0+i)*k, Y=box.y+r.top[r.x0+i]*oy;
+    i?c.lineTo(X,Y):c.moveTo(X,Y);
+  }
+  c.stroke();
+  c.strokeStyle="rgba(90,180,255,.9)"; c.beginPath();
+  c.moveTo(box.x+r.x0*k, box.y+(r.line.slope*r.x0+r.line.intercept)*oy);
+  c.lineTo(box.x+r.x1*k, box.y+(r.line.slope*r.x1+r.line.intercept)*oy);
+  c.stroke();
+  if(r.ridgeX){
+    c.fillStyle="#eab948";
+    for(i=0;i<r.ridgeX.length;i++){
+      var rx=box.x+(r.x0+r.ridgeX[i])*k;
+      c.fillRect(rx-1.5, box.y+box.h-16, 3, 12);
+    }
+  }
+}
+
+function showMetrics(r){
+  if(!r||!r.found||!r.gaps){ metricsEl.innerHTML=""; return; }
+  metricsEl.innerHTML =
+    "spacing <b>"+r.gaps.join("/")+"</b>"+
+    " &nbsp; spread <b>"+(r.gapSpread*100).toFixed(1)+"%</b>"+
+    " &nbsp; square <b>"+(r.axisRatio*100).toFixed(0)+"%</b>"+
+    " &nbsp; level <b>"+r.tilt.toFixed(1)+"&deg;</b>";
+}
+
+function tick(){
+  if(!running) return;
+  if(vid.readyState>=2){
+    var sw=vid.videoWidth, sh=vid.videoHeight;
+    var r=grabAndAnalyze(vid,sw,sh);
+    draw(r,sw,sh); showMetrics(r);
+    var c=coach(r,r._pw);
+    statusEl.textContent=c.msg; statusEl.className=c.cls;
+    if(c.locked){
+      burst.push(r.depths);
+      statusEl.textContent="Hold it there \u2014 "+burst.length+" of 8";
+      if(burst.length>=8){ finish(); return; }
+    } else if(burst.length){ burst=[]; }
+  }
+  requestAnimationFrame(tick);
+}
+
+function finish(){
+  running=false;
+  var out=[],spreadOK=true;
+  for(var i=0;i<spec.cuts;i++){
+    var col=burst.map(function(b){return b[i];}).filter(function(v){return v!==null;});
+    if(!col.length){ out.push(null); continue; }
+    col.sort(function(a,b){return a-b;});
+    out.push(col[col.length>>1]);
+    if(col[col.length-1]-col[0]>0) spreadOK=false;
+  }
+  render(out,spreadOK);
+  statusEl.textContent="Reading captured"; statusEl.className="good";
+}
+
+function render(depths,agree){
+  resultCard.classList.remove("hide");
+  bitEl.innerHTML="";
+  depths.forEach(function(d,i){
+    var el=document.createElement("div");
+    el.innerHTML=(d===null?"?":d)+"<small>CUT "+(i+1)+"</small>";
+    el.onclick=function(){
+      var v=prompt("Cut "+(i+1)+" depth (1-7)", d===null?"":d);
+      if(v!==null&&v!==""){ depths[i]=Math.max(1,Math.min(7,parseInt(v,10)||1)); render(depths,agree); }
+    };
+    bitEl.appendChild(el);
+  });
+  var macs=[];
+  for(var i=1;i<depths.length;i++)
+    if(depths[i]!==null&&depths[i-1]!==null&&Math.abs(depths[i]-depths[i-1])>spec.macs) macs.push(i);
+  confEl.innerHTML = (agree?"All eight frames agreed.":"Frames disagreed on at least one cut \u2014 check those by hand.")
+    + (macs.length?" &nbsp;MACS break between cut "+macs.map(function(i){return i+" and "+(i+1);}).join(", ")+".":"");
+  document.getElementById("use").onclick=function(){
+    try{ localStorage.setItem("pinbench_change", depths.join("")); }catch(e){}
+    alert("Bitting "+depths.join("")+" \u2014 paste this into the change key field.");
+  };
+}
+
+document.getElementById("start").onclick=function(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    statusEl.textContent="No camera API here. Use the photo picker below."; statusEl.className="warn"; return;
+  }
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920}}})
+    .then(function(st){
+      vid.srcObject=st; vid.play();
+      startCard.classList.add("hide"); running=true; burst=[]; tick();
+    })
+    .catch(function(e){
+      statusEl.textContent="Camera blocked ("+e.name+"). Needs https or localhost \u2014 use the photo picker.";
+      statusEl.className="warn";
+    });
+};
+
+document.getElementById("still").onchange=function(e){
+  var f=e.target.files[0]; if(!f) return;
+  var img=new Image();
+  img.onload=function(){
+    var cv=document.createElement("canvas"); cv.width=img.width; cv.height=img.height;
+    cv.getContext("2d").drawImage(img,0,0);
+    var r=grabAndAnalyze(cv,img.width,img.height);
+    vid.classList.add("hide");
+    draw(r,img.width,img.height); showMetrics(r);
+    var c=coach(r,r._pw);
+    statusEl.textContent=c.msg; statusEl.className=c.cls;
+    if(c.locked) render(r.depths,true);
+  };
+  img.src=URL.createObjectURL(f);
+};
+</script>
+
+<script>
+if("serviceWorker" in navigator){
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("./sw.js").catch(function(){ /* http, or opened from disk */ });
+  });
+}
+</script>
+</body>
+</html>
