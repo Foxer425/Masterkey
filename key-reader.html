@@ -175,7 +175,37 @@ function analyze(lum,W,H,spec){
   var res={found:true,x0:x0,x1:x1,span:span,h:h,bladeMaxPx:hi,
            tilt:Math.atan(line.slope)*180/Math.PI,line:line,top:top};
 
-  var ridges=findPeaks(h,hi*0.05,Math.max(6,span*0.05));
+  /* The bow is 3-4x taller than the blade, so the shoulder is the biggest
+     step in this profile. Find it and throw the bow away — otherwise its
+     serrations get counted as cuts. The user shouldn't have to place a box
+     edge by hand. */
+  var srt=Array.prototype.slice.call(h).sort(function(a,b){return a-b;});
+  var hBlade=srt[Math.floor(srt.length*0.30)], tallT=hBlade*1.5;
+  var edge=Math.max(4,Math.round(span*0.12)), L=0, R=0, q;
+  for(q=0;q<edge;q++){ if(h[q]>tallT)L++; if(h[span-1-q]>tallT)R++; }
+  var bStart=0, bEnd=span-1, bowSide=null;
+  if(L>=edge*0.45 && L>=R){
+    bowSide="left"; var last=0;
+    for(q=0;q<Math.round(span*0.55);q++) if(h[q]>tallT) last=q;
+    bStart=Math.min(last+Math.round(span*0.025), span-1);
+  } else if(R>=edge*0.45){
+    bowSide="right"; var firstT=span-1;
+    for(q=span-1;q>Math.round(span*0.45);q--) if(h[q]>tallT) firstT=q;
+    bEnd=Math.max(firstT-Math.round(span*0.025), 0);
+  }
+  res.bowSide=bowSide;
+  res.shoulderX=bowSide==="left"?x0+bStart:(bowSide==="right"?x0+bEnd:null);
+  res.bladeStart=x0+bStart; res.bladeEnd=x0+bEnd;
+  var bladeSpan=bEnd-bStart+1;
+  res.bladeSpan=bladeSpan;
+  if(bladeSpan < span*0.35 || bladeSpan < 40){ res.reason="short_blade"; return res; }
+
+  var hb=new Float32Array(bladeSpan);
+  for(q=0;q<bladeSpan;q++) hb[q]=h[bStart+q];
+  var hbMax=0; for(q=0;q<bladeSpan;q++) hbMax=Math.max(hbMax,hb[q]);
+  res.bladeMaxPx=hbMax;
+
+  var ridges=findPeaks(hb,hbMax*0.032,Math.max(5,bladeSpan*0.055));
   if(ridges.length<spec.cuts-1){res.reason="few_ridges";res.ridgeCount=ridges.length;return res;}
 
   var need=spec.cuts-1,use=ridges;
@@ -187,6 +217,13 @@ function analyze(lum,W,H,spec){
         var mn=median(gg);if(mn<=0)return;
         var err=0;for(j=0;j<gg.length;j++)err+=Math.pow((gg[j]-mn)/mn,2);
         err=err/gg.length-Math.log(mn)*0.02;
+        // If the shoulder is known, the first ridge sits a fixed number of
+        // spacings from it. That constraint kills sets that latch onto noise
+        // just past the shoulder.
+        if(bowSide){
+          var want=(spec.firstCut+spec.spacing/2)/spec.spacing;
+          err += 0.9*Math.pow((combo[0]/mn - want)/want, 2);
+        }
         if(err<bestScore){bestScore=err;bestSet=combo.slice();}
         return;
       }
@@ -199,9 +236,9 @@ function analyze(lum,W,H,spec){
   var s=median(gaps),spread=0;
   for(i=0;i<gaps.length;i++)spread=Math.max(spread,Math.abs(gaps[i]-s)/s);
 
-  res.ridgeX=use;res.gaps=gaps;res.spacingPx=s;res.gapSpread=spread;
+  res.ridgeX=use;res.ridgeAbs=use.map(function(v){return x0+bStart+v;});res.gaps=gaps;res.spacingPx=s;res.gapSpread=spread;
   res.pxPerInch=s/spec.spacing;
-  res.bladeInches=hi/res.pxPerInch;
+  res.bladeInches=hbMax/res.pxPerInch;
   res.axisRatio=res.bladeInches/spec.bladeHeight;   // 1.0 = square on
   res.farEnd=gaps.length>1?(gaps[gaps.length-1]<gaps[0]?"right":"left"):null;
 
@@ -209,7 +246,7 @@ function analyze(lum,W,H,spec){
   for(i=0;i<spec.cuts;i++){
     var cx=use[0]-s/2+i*s,lo=1e9,d;
     for(d=-Math.round(s*0.22);d<=Math.round(s*0.22);d++){
-      var xx=Math.round(cx-x0+d);if(xx>=0&&xx<span)lo=Math.min(lo,h[xx]);
+      var xx=Math.round(cx+d);if(xx>=0&&xx<bladeSpan)lo=Math.min(lo,hb[xx]);
     }
     if(lo>1e8){raw.push(null);depths.push(null);continue;}
     var inches=lo/res.pxPerInch,dep=1+(spec.root1-inches)/spec.increment;
@@ -231,12 +268,13 @@ var SM = null;                      // smoothed metrics
 function ema(o,n,a){ return o===null ? n : o + (n-o)*a; }
 
 function smooth(r, boxW){
-  if(!SM) SM = {fill:null, tilt:null, spread:null, ratio:null, ridges:null, cuts:null};
+  if(!SM) SM = {fill:null, tilt:null, spread:null, ratio:null, ridges:null, cuts:null, blade:null};
   var a = 0.25;
   if(!r.found){ SM.fill = ema(SM.fill, 0, a); SM.ridges = ema(SM.ridges, 0, a); return SM; }
   SM.fill   = ema(SM.fill,   r.span/boxW, a);
   SM.tilt   = ema(SM.tilt,   Math.abs(r.tilt), a);
   SM.ridges = ema(SM.ridges, r.ridgeX ? r.ridgeX.length : (r.ridgeCount||0), a);
+  if(r.bladeSpan) SM.blade = ema(SM.blade, r.bladeSpan/r.span, a);
   if(r.gaps){
     SM.spread = ema(SM.spread, r.gapSpread, a);
     SM.ratio  = ema(SM.ratio,  r.axisRatio, a);
@@ -253,9 +291,11 @@ function checks(m, active){
   function band(v, enter, exit, id){ return active===id ? v>exit : v>enter; }
   return [
     { id:"fill",   fail: active==="fill"   ? m.fill<0.72 : m.fill<0.62,
-      msg:"Move closer \u2014 fill the box with the blade" },
+      msg:"Move closer \u2014 the whole key should nearly fill the box" },
     { id:"ridges", fail: active==="ridges" ? m.ridges<3.7 : m.ridges<3.2,
-      msg:"Line the blade up with the outline \u2014 bow off the left edge" },
+      msg:"Lay the key flat in the box, cuts facing up" },
+    { id:"blade",  fail: m.blade!==null && m.blade<0.35,
+      msg:"Can\u2019t separate the blade from the bow \u2014 try a plainer background" },
     { id:"level",  fail: band(m.tilt, 12, 8, "level"),
       msg:"Rotate the phone \u2014 sit the blade level" },
     { id:"spread", fail: band(m.spread, 0.06, 0.04, "spread"), dir:true,
@@ -336,50 +376,51 @@ var work=document.createElement("canvas"), wctx=work.getContext("2d",{willReadFr
 var PROC_W=440, burst=[], running=false, spec=KW1;
 
 function boxRect(w,h){
-  // shaped like a KW1 blade (about 4:1) so "fill the box" means something
-  var bw = Math.round(w*0.90), bh = Math.round(bw/4.0);
-  if(bh > h*0.55){ bh = Math.round(h*0.55); bw = Math.round(bh*4.0); }
+  // whole key, bow and all — roughly 2.6:1. The app finds the shoulder itself.
+  var bw = Math.round(w*0.92), bh = Math.round(bw/2.6);
+  if(bh > h*0.62){ bh = Math.round(h*0.62); bw = Math.round(bh*2.6); }
   return {x:Math.round((w-bw)/2), y:Math.round((h-bh)/2), w:bw, h:bh};
 }
 
-/* A ghost key drawn in the box, so there is no guessing about how much of
-   the key belongs inside it. Nest the real blade into the outline. */
+/* Ghost of a whole key, bow included, so there is nothing to line up by hand:
+   drop the key in the box, lying flat, cuts facing up. */
 function ghost(c, box){
   var x=box.x, y=box.y, w=box.w, h=box.h;
-  var shoulder = x + w*0.05, tip = x + w*0.985;
-  var bladeBot = y + h*0.80, uncut = y + h*0.20;
-  var first = shoulder + (tip-shoulder)*0.14, sp = (tip-shoulder)*0.155;
+  var bowL = x + w*0.04, bowR = x + w*0.26;
+  var tip  = x + w*0.965;
+  var mid  = y + h*0.50;
+  var bowT = mid - h*0.30, bowB = mid + h*0.30;
+  var uncut = mid - h*0.11, bladeBot = mid + h*0.13;
+  var first = bowR + (tip-bowR)*0.17, sp = (tip-bowR)*0.148;
 
   c.save();
-  c.strokeStyle = "rgba(200,145,43,.42)";
-  c.lineWidth = 2; c.setLineDash([6,5]);
+  c.strokeStyle="rgba(200,145,43,.38)"; c.lineWidth=2; c.setLineDash([6,5]);
 
   c.beginPath();
-  c.moveTo(x - w*0.08, uncut - h*0.16);       // bow, running off the left edge
-  c.lineTo(shoulder, uncut - h*0.16);
-  c.lineTo(shoulder, uncut);
-  for(var i=0;i<5;i++){                        // a generic cut profile
-    var cx = first + i*sp, d = [0.34,0.20,0.42,0.24,0.36][i];
-    c.lineTo(cx - sp*0.30, uncut);
-    c.lineTo(cx,           uncut + h*d);
-    c.lineTo(cx + sp*0.30, uncut);
+  c.moveTo(bowL+h*0.10, bowT);
+  c.lineTo(bowR, bowT);
+  c.lineTo(bowR, uncut);
+  for(var i=0;i<5;i++){
+    var cx=first+i*sp, d=[0.30,0.17,0.38,0.21,0.32][i];
+    c.lineTo(cx-sp*0.30, uncut);
+    c.lineTo(cx,         uncut + h*d*0.5);
+    c.lineTo(cx+sp*0.30, uncut);
   }
-  c.lineTo(tip - w*0.02, uncut);
-  c.lineTo(tip, uncut + h*0.14);
-  c.lineTo(tip, bladeBot - h*0.06);
-  c.lineTo(tip - w*0.015, bladeBot);
-  c.lineTo(shoulder, bladeBot);
-  c.lineTo(shoulder, bladeBot + h*0.16);
-  c.lineTo(x - w*0.08, bladeBot + h*0.16);
+  c.lineTo(tip-w*0.02, uncut);
+  c.lineTo(tip, uncut+h*0.06);
+  c.lineTo(tip, bladeBot-h*0.03);
+  c.lineTo(tip-w*0.012, bladeBot);
+  c.lineTo(bowR, bladeBot);
+  c.lineTo(bowR, bowB);
+  c.lineTo(bowL+h*0.10, bowB);
+  c.quadraticCurveTo(bowL, bowB, bowL, bowB-h*0.10);
+  c.lineTo(bowL, bowT+h*0.10);
+  c.quadraticCurveTo(bowL, bowT, bowL+h*0.10, bowT);
   c.stroke();
   c.setLineDash([]);
 
-  c.fillStyle = "rgba(200,145,43,.75)";
-  c.font = "600 11px monospace";
-  c.fillText("BOW OFF THE EDGE", x + 2, y - 9);
-  c.textAlign = "right";
-  c.fillText("TIP HERE", x + w, y - 9);
-  c.textAlign = "left";
+  c.fillStyle="rgba(200,145,43,.7)"; c.font="600 11px monospace";
+  c.fillText("WHOLE KEY IN THE BOX \u00b7 CUTS UP", x+2, y-9);
   c.restore();
 }
 
@@ -415,6 +456,21 @@ function draw(r,sw,sh){
 
   if(!r || !r.found || !r.h) return;
   var k=box.w/r._pw, oy=box.h/r._ph;
+
+  // where it decided the shoulder is, and how much it is actually reading
+  if(r.bladeStart!=null){
+    var bs=box.x+r.bladeStart*k, be=box.x+r.bladeEnd*k;
+    c.fillStyle="rgba(89,179,122,.13)";
+    c.fillRect(bs, box.y, be-bs, box.h);
+    if(r.shoulderX!=null){
+      var sx=box.x+r.shoulderX*k;
+      c.strokeStyle="rgba(89,179,122,.95)"; c.lineWidth=2;
+      c.beginPath(); c.moveTo(sx,box.y+3); c.lineTo(sx,box.y+box.h-3); c.stroke();
+      c.fillStyle="rgba(89,179,122,.95)"; c.font="600 10px monospace";
+      c.fillText("SHOULDER", sx+5, box.y+14);
+    }
+  }
+
   c.strokeStyle="#e0554f"; c.lineWidth=2.5; c.beginPath();
   for(var i=0;i<r.span;i++){
     var X=box.x+(r.x0+i)*k, Y=box.y+r.top[r.x0+i]*oy;
@@ -425,10 +481,10 @@ function draw(r,sw,sh){
   c.moveTo(box.x+r.x0*k, box.y+(r.line.slope*r.x0+r.line.intercept)*oy);
   c.lineTo(box.x+r.x1*k, box.y+(r.line.slope*r.x1+r.line.intercept)*oy);
   c.stroke();
-  if(r.ridgeX){
+  if(r.ridgeAbs){
     c.fillStyle="#eab948";
-    for(i=0;i<r.ridgeX.length;i++){
-      var rx=box.x+(r.x0+r.ridgeX[i])*k;
+    for(i=0;i<r.ridgeAbs.length;i++){
+      var rx=box.x+r.ridgeAbs[i]*k;
       c.fillRect(rx-1.5, box.y+box.h-15, 3, 11);
     }
   }
